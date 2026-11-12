@@ -1,18 +1,16 @@
 name: Publish pickup lookup
 
+# The site is a single static page: people sign in with their school APP account and the page reads
+# the ERP live with their own session. No data and no credentials are involved in publishing.
 on:
   push:
     branches: [main]
   workflow_dispatch:
-  schedule:
-    # Monday to Friday, hourly from 05:15 to 16:15 UTC (6:15–17:15 Madrid time in winter, 7:15–18:15 in summer)
-    - cron: '15 5-16 * * 1-5'
 
 permissions:
   contents: read
   pages: write
   id-token: write
-  actions: write   # only for the keep-alive step below
 
 concurrency:
   group: pages
@@ -26,16 +24,13 @@ jobs:
       url: ${{ steps.pages.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Read the ERP and encrypt
-        run: node build.mjs dist
-        env:
-          BSCD_ERP_USER: ${{ secrets.BSCD_ERP_USER }}
-          BSCD_ERP_PASS: ${{ secrets.BSCD_ERP_PASS }}
-          PICKUP_ACCESS_KEY: ${{ secrets.PICKUP_ACCESS_KEY }}
-      # Preview of the dev branch at /dev/ (page only: it holds no data file).
+      - name: Assemble the site
+        run: |
+          mkdir -p dist
+          cp index.html dist/index.html
+          printf 'User-agent: *\nDisallow: /\n' > dist/robots.txt
+          touch dist/.nojekyll
+      # Preview of the dev branch at /dev/. Run this workflow manually after pushing to dev.
       - name: Add the dev preview
         run: |
           if git fetch --depth=1 origin dev 2>/dev/null; then
@@ -46,10 +41,3 @@ jobs:
           path: dist
       - id: pages
         uses: actions/deploy-pages@v4
-      # GitHub disables scheduled workflows after 60 days without repository activity.
-      # Re-enabling the workflow on every run resets that timer, so the schedule keeps going all year.
-      - name: Keep the schedule alive
-        if: always()
-        run: gh workflow enable publish.yml -R "$GITHUB_REPOSITORY"
-        env:
-          GH_TOKEN: ${{ github.token }}
