@@ -30,65 +30,92 @@ h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)
 .p a{color:var(--acc);text-decoration:none;white-space:nowrap;font-variant-numeric:tabular-nums;padding:6px 0}
 .note{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:10px;font-size:15px;margin-top:6px}
 .foot{font-size:13px;color:var(--mut);margin:14px 2px}
+label{display:block;font-size:14px;color:var(--mut);margin:12px 2px 4px}
+.banner{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:8px 10px;font-size:13px;margin-bottom:12px}
+.who{font-size:14px;color:var(--mut);margin:0 2px 10px}
 [hidden]{display:none!important}
 </style>
 </head>
 <body>
 <main>
+<div class="banner" id="devbanner" hidden>Development preview. Not for daily use.</div>
 <header><h1>Pickups · who can collect this child?</h1><button class="link" id="signout" hidden>Sign out</button></header>
 
-<form id="gate" hidden>
-  <input id="key" type="password" placeholder="Access key" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">
-  <button type="submit">Enter</button>
+<form id="login" hidden>
+  <label for="user">APP username</label>
+  <input id="user" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <label for="pass">Password</label>
+  <input id="pass" type="password" autocomplete="current-password">
+  <button type="submit" id="go">Sign in</button>
 </form>
 
 <div id="search" hidden>
+  <div class="who" id="who"></div>
   <input id="q" type="search" placeholder="Student's first name or surname" autocomplete="off" autocapitalize="words">
 </div>
-<div id="status">Loading…</div>
+<div id="status"></div>
 <div id="res"></div>
 <div class="foot" id="foot"></div>
 </main>
 <script>
 (function () {
   'use strict';
-  var MAX = 8, STORE = 'pickup-access-key';
+  // Sign-in uses the school APP (ERP) accounts: the page sends the username and the hashed password
+  // straight to the ERP login and keeps the session it returns. Nothing is stored beyond this tab.
+  var ERP_LOGIN = 'https://api.app.bscd.eu/erp/admin/login';
+  // Lookup service: receives the search text plus the ERP session and returns matching students.
+  // Empty until the service is deployed; the page then only proves the sign-in.
+  var LOOKUP_URL = '';
+  var SESSION = 'pickup-session';
+
   var $ = function (id) { return document.getElementById(id); };
-  var gate = $('gate'), keyInput = $('key'), search = $('search'), q = $('q'), status = $('status'), res = $('res'), foot = $('foot'), signout = $('signout');
-  var data = null, index = [], encrypted = null, timer = null;
-  var ACCENTS = new RegExp('[' + String.fromCharCode(0x300) + '-' + String.fromCharCode(0x36f) + ']', 'g');
+  var login = $('login'), user = $('user'), pass = $('pass'), go = $('go'), search = $('search'), who = $('who'), q = $('q'),
+      status = $('status'), res = $('res'), foot = $('foot'), signout = $('signout');
+  var session = null, timer = null, seq = 0;
 
   function say(txt, err) { status.textContent = txt; status.className = err ? 'err' : ''; }
-  function saved() { try { return localStorage.getItem(STORE) || ''; } catch (e) { return ''; } }
-  function save(v) { try { v ? localStorage.setItem(STORE, v) : localStorage.removeItem(STORE); } catch (e) { /* no storage: the key is asked every time */ } }
-  function bytes(b64) { var s = atob(b64), u = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; }
-  function norm(s) { return String(s || '').normalize('NFD').replace(ACCENTS, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
   function el(tag, cls, txt) { var e = document.createElement(tag); if (cls) e.className = cls; if (txt !== undefined) e.textContent = txt; return e; }
+  function stored() { try { return JSON.parse(sessionStorage.getItem(SESSION) || 'null'); } catch (e) { return null; } }
+  function store(v) { try { v ? sessionStorage.setItem(SESSION, JSON.stringify(v)) : sessionStorage.removeItem(SESSION); } catch (e) { /* no storage: sign in again after a reload */ } }
 
-  function decrypt(k) {
-    return crypto.subtle.importKey('raw', new TextEncoder().encode(k.trim()), 'PBKDF2', false, ['deriveKey']).then(function (base) {
-      return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt: bytes(encrypted.salt), iterations: encrypted.it }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-    }).then(function (key) {
-      return crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes(encrypted.iv) }, key, bytes(encrypted.ct));
-    }).then(function (buf) { return JSON.parse(new TextDecoder().decode(buf)); });
+  // The ERP expects the password as Base64(SHA-512(password)).
+  function hashPassword(p) {
+    return crypto.subtle.digest('SHA-512', new TextEncoder().encode(p)).then(function (buf) {
+      var u = new Uint8Array(buf), s = ''; for (var i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s);
+    });
+  }
+  // Expiry time (ms) read from the session token, so an expired session goes back to the sign-in form.
+  function expiry(token) {
+    try { var p = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'); return JSON.parse(atob(p)).exp * 1000; } catch (e) { return 0; }
   }
 
-  function open(k, fromSaved) {
-    say('Checking key…');
-    decrypt(k).then(function (d) {
-      data = d;
-      index = d.students.map(function (s) { return ' ' + norm(s[0]); });
-      save(k.trim());
-      gate.hidden = true; search.hidden = false; signout.hidden = false; keyInput.value = '';
-      say('Type at least 3 letters.');
-      foot.textContent = 'ERP data as of ' + d.updated + ' · ' + d.students.length + ' active students';
-      q.focus();
-    }).catch(function () {
-      save('');
-      gate.hidden = false; search.hidden = true;
-      say(fromSaved ? 'The access key has changed. Ask ICT for the new one.' : 'Wrong access key.', true);
-      keyInput.focus();
-    });
+  function showLogin(msg, err) {
+    session = null; store(null);
+    login.hidden = false; search.hidden = true; signout.hidden = true; res.textContent = ''; foot.textContent = '';
+    say(msg || 'Sign in with your school APP username and password.', err);
+  }
+  function showSearch() {
+    login.hidden = true; search.hidden = false; signout.hidden = false; pass.value = '';
+    who.textContent = 'Signed in as ' + session.name + (session.profile ? ' · ' + session.profile : '');
+    if (LOOKUP_URL) { say('Type at least 3 letters.'); q.disabled = false; q.focus(); }
+    else { q.disabled = true; say('Sign-in works. The student lookup is not connected yet in this preview.'); }
+  }
+
+  function signIn(username, password) {
+    go.disabled = true; say('Signing in…');
+    hashPassword(password).then(function (hash) {
+      return fetch(ERP_LOGIN, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: username, password: hash }) });
+    }).then(function (r) {
+      return r.json().catch(function () { return null; }).then(function (js) { return { http: r.status, js: js }; });
+    }).then(function (x) {
+      go.disabled = false;
+      var ok = x.js && x.js.result && x.js.result.success === 1 && x.js.data && x.js.data.token;
+      if (!ok) { showLogin(x.http === 401 || x.http === 403 || x.http === 200 ? 'Wrong username or password.' : 'The APP is not responding (error ' + x.http + '). Try again in a minute.', true); pass.focus(); return; }
+      var a = x.js.data.account || {};
+      if (a.obligar_modificar_password) { showLogin('You must change your password in the APP before you can use this page.', true); return; }
+      session = { token: x.js.data.token, name: a.name || a.username || username, profile: a.perfil || '', exp: expiry(x.js.data.token) };
+      store(session); showSearch();
+    }).catch(function () { go.disabled = false; showLogin('Could not reach the APP. Check your connection and try again.', true); });
   }
 
   function person(x, isAuthorised) {
@@ -99,42 +126,48 @@ h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)
     if (x[1]) { var a = el('a', '', x[1]); a.href = 'tel:' + String(x[1]).replace(/[^0-9+]/g, ''); p.appendChild(a); }
     return p;
   }
-
-  function find() {
-    var tokens = norm(q.value).split(' ').filter(Boolean);
+  function render(r) {
     res.textContent = '';
-    if (tokens.join('').length < 3) { say('Type at least 3 letters.'); return; }
-    var found = [];
-    index.forEach(function (n, i) { if (tokens.every(function (tk) { return n.indexOf(' ' + tk) >= 0; })) found.push(data.students[i]); });
-    if (!found.length) { say('No active student matches. Check the spelling or try the surname only.'); return; }
-    say(found.length > MAX ? 'Showing ' + MAX + ' of ' + found.length + '. Type more to narrow it down.' : found.length + (found.length === 1 ? ' student' : ' students'));
-    found.slice(0, MAX).forEach(function (s) {
-      var f = data.families[s[3]] || { g: [], a: [] }, c = el('div', 'card');
-      c.appendChild(el('div', 'child', s[0]));
-      c.appendChild(el('div', 'year', s[1] + ' · ' + s[2]));
+    if (!r.students.length) { say('No active student matches. Check the spelling or try the surname only.'); return; }
+    say(r.total > r.students.length ? 'Showing ' + r.students.length + ' of ' + r.total + '. Type more to narrow it down.' : r.total + (r.total === 1 ? ' student' : ' students'));
+    r.students.forEach(function (s) {
+      var c = el('div', 'card');
+      c.appendChild(el('div', 'child', s.name));
+      c.appendChild(el('div', 'year', s.year + ' · ' + s.cls));
       c.appendChild(el('h2', '', 'Parents / guardians'));
-      if (f.g.length) f.g.forEach(function (x) { c.appendChild(person(x, false)); });
+      if (s.guardians.length) s.guardians.forEach(function (x) { c.appendChild(person(x, false)); });
       else c.appendChild(el('div', 'note', 'Not listed separately: check the authorised list or ask the school office.'));
-      c.appendChild(el('h2', '', 'Authorised to collect (' + f.a.length + ')'));
-      if (f.a.length) f.a.forEach(function (x) { c.appendChild(person(x, true)); });
+      c.appendChild(el('h2', '', 'Authorised to collect (' + s.authorised.length + ')'));
+      if (s.authorised.length) s.authorised.forEach(function (x) { c.appendChild(person(x, true)); });
       else c.appendChild(el('div', 'note', 'Nobody else is authorised: only the parents / guardians may collect this child.'));
       res.appendChild(c);
     });
+    foot.textContent = r.updated ? 'ERP data as of ' + r.updated : '';
+  }
+  function find() {
+    var text = q.value.trim(), mine = ++seq;
+    if (text.replace(/[^A-Za-z0-9]/g, '').length < 3) { res.textContent = ''; say('Type at least 3 letters.'); return; }
+    if (!session || session.exp < Date.now()) { showLogin('Your session has expired. Sign in again.', true); return; }
+    say('Searching…');
+    // Sent as text/plain to avoid a CORS preflight; the body is JSON.
+    fetch(LOOKUP_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ token: session.token, q: text }) })
+      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (mine !== seq) return;
+        if (r.error === 'session') { showLogin('Your session has expired. Sign in again.', true); return; }
+        if (r.error) { res.textContent = ''; say(r.message || 'You do not have access to the pickup lookup. Ask ICT.', true); return; }
+        render(r);
+      }).catch(function () { if (mine === seq) say('Could not reach the lookup service. Try again.', true); });
   }
 
-  gate.addEventListener('submit', function (e) { e.preventDefault(); if (keyInput.value.trim()) open(keyInput.value, false); });
-  q.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(find, 150); });
-  signout.addEventListener('click', function () { save(''); location.replace(location.pathname); });
+  login.addEventListener('submit', function (e) { e.preventDefault(); if (user.value.trim() && pass.value) signIn(user.value.trim(), pass.value); });
+  q.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(find, 350); });
+  signout.addEventListener('click', function () { showLogin(); user.focus(); });
 
-  if (!window.crypto || !crypto.subtle) { say('This browser cannot open the data. Use an up-to-date Chrome or Safari.', true); return; }
-  fetch('data.json', { cache: 'no-store' }).then(function (r) { if (!r.ok) throw new Error(); return r.json(); }).then(function (c) {
-    encrypted = c;
-    // The link may carry the key after "#": it is never sent to the server and is removed from the address bar on entry.
-    var h = decodeURIComponent(location.hash.slice(1));
-    if (h) history.replaceState(null, '', location.pathname);
-    var k = h || saved();
-    if (k) open(k, !h); else { gate.hidden = false; say('Enter the access key ICT gave you.'); keyInput.focus(); }
-  }).catch(function () { say('Could not load the data. Check your connection and reload.', true); });
+  if (/\/dev\//.test(location.pathname)) $('devbanner').hidden = false;
+  if (!window.crypto || !crypto.subtle) { say('This browser cannot sign in. Use an up-to-date Chrome or Safari.', true); return; }
+  session = stored();
+  if (session && session.exp > Date.now()) showSearch(); else showLogin();
 })();
 </script>
 </body>
