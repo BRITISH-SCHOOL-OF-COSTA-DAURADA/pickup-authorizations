@@ -77,8 +77,8 @@ function txt(v) {
 const norm = t => txt(t).normalize('NFD').replace(RE_ACCENTS, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const phone = v => { const t = txt(v); return t === '0' ? '' : t; };
 const fullName = x => [x.nom, x.cognom1, x.cognom2].map(txt).filter(Boolean).join(' ');
-// Only the end of the ID document: enough to check it against the one the person shows, without exposing the full number.
-const idEnding = x => (txt(x.dni) || txt(x.passaport)).replace(/[\s.-]/g, '').toUpperCase().slice(-4);
+// Full ID document number (DNI/NIE, or passport when there is none), so monitors can check it against the one shown.
+const idNumber = x => (txt(x.dni) || txt(x.passaport)).replace(/[\s.-]/g, '').toUpperCase();
 
 async function inBatches(items, n, fn) {
     const res = new Array(items.length);
@@ -108,7 +108,7 @@ for (const id of familyIds) {
     const guardians = (contactsByFamily.get(id) || []).filter(r => !ids.has(r.id) && !names.has(norm(r.nom) + '|' + norm(r.cognom1)));
     families[id] = {
         g: guardians.map(r => [fullName(r), phone(r.tel1) || phone(r.tel2)]),
-        a: a.map(x => [fullName(x), phone(x.tel1), idEnding(x)])
+        a: a.map(x => [fullName(x), phone(x.tel1), idNumber(x)])
     };
     nAuthorised += a.length; nGuardians += guardians.length;
 }
