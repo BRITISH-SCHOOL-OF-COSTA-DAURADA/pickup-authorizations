@@ -35,6 +35,12 @@ jobs:
           BSCD_ERP_USER: ${{ secrets.BSCD_ERP_USER }}
           BSCD_ERP_PASS: ${{ secrets.BSCD_ERP_PASS }}
           PICKUP_ACCESS_KEY: ${{ secrets.PICKUP_ACCESS_KEY }}
+      # Preview of the dev branch at /dev/ (page only: it holds no data file).
+      - name: Add the dev preview
+        run: |
+          if git fetch --depth=1 origin dev 2>/dev/null; then
+            mkdir -p dist/dev && git show FETCH_HEAD:index.html > dist/dev/index.html
+          fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
