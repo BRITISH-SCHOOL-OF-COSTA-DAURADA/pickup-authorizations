@@ -1,10 +1,11 @@
-# Recogidas
+# Pickup authorizations
 
-Buscador para monitores: se escribe el nombre del alumno y muestra sus padres/tutores y las personas autorizadas a recogerlo.
+Lookup for after-school monitors: type a student's name and see their parents/guardians and the people authorised to collect them.
 
-- `build.mjs` lee el ERP (solo lectura), cifra los datos con la clave de acceso y genera `dist/`.
-- `index.html` pide la clave, descifra en el navegador y busca en local.
-- `.github/workflows/publicar.yml` lo regenera cada hora en horario escolar y lo publica en GitHub Pages.
+- `build.mjs` reads the ERP (read-only), encrypts the data with the access key and generates `dist/`.
+- `index.html` asks for the key, decrypts in the browser and searches locally.
+- `.github/workflows/publish.yml` rebuilds it every hour during school hours and publishes it to GitHub Pages.
 
-Secretos del repositorio: `BSCD_ERP_USER`, `BSCD_ERP_PASS`, `RECOGIDAS_CLAVE`.
-Los datos no se guardan en el repositorio y solo se publican cifrados. Para cambiar la clave: actualizar `RECOGIDAS_CLAVE` y lanzar el workflow a mano.
+Repository secrets: `BSCD_ERP_USER`, `BSCD_ERP_PASS`, `PICKUP_ACCESS_KEY`.
+
+Data is never stored in the repository and is only published encrypted. To change the access key, update `PICKUP_ACCESS_KEY` and run the workflow manually. A link of the form `https://…/pickup-authorizations/#<key>` signs a monitor in without typing.
