@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Recogidas BSCD</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--ink:#16202b;--mut:#5d6b7a;--line:#dfe3e8;--ok:#0b6b3a;--okbg:#e3f4ea;--warn:#8a4b00;--warnbg:#fff1d6;--acc:#0b4f8a;--err:#a11b1b}
+@media (prefers-color-scheme:dark){:root{--bg:#11161c;--card:#1a222b;--ink:#eef2f6;--mut:#9aa7b4;--line:#2c3742;--ok:#7fdca6;--okbg:#143424;--warn:#ffcf7a;--warnbg:#3a2b0c;--acc:#8cc4ff;--err:#ff9a9a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:640px;margin:0 auto;padding:16px}
+header{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+h1{font-size:20px;margin:4px 0 12px}
+input{width:100%;font-size:20px;padding:14px;border:2px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink)}
+input:focus{outline:none;border-color:var(--acc)}
+button{font:inherit;border:0;border-radius:12px;padding:14px;background:var(--acc);color:var(--bg);font-weight:600;width:100%;margin-top:10px}
+button.link{background:none;color:var(--mut);width:auto;padding:4px;margin:0;font-weight:400;font-size:14px;text-decoration:underline}
+#estado{color:var(--mut);font-size:14px;margin:10px 2px;min-height:20px}
+#estado.err{color:var(--err)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
+.nino{font-size:19px;font-weight:700}
+.curso{color:var(--mut);font-size:14px}
+h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:16px 0 4px}
+.p{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:9px 0;border-top:1px solid var(--line)}
+.p b{font-weight:600}
+.dni{font-size:14px;color:var(--mut);font-variant-numeric:tabular-nums}
+.p a{color:var(--acc);text-decoration:none;white-space:nowrap;font-variant-numeric:tabular-nums;padding:6px 0}
+.aviso{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:10px;font-size:15px;margin-top:6px}
+.pie{font-size:13px;color:var(--mut);margin:14px 2px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<header><h1>Recogidas · ¿quién puede llevarse al niño?</h1><button class="link" id="salir" hidden>Salir</button></header>
+
+<form id="entrada" hidden>
+  <input id="clave" type="password" placeholder="Clave de acceso" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <button type="submit">Entrar</button>
+</form>
+
+<div id="buscador" hidden>
+  <input id="q" type="search" placeholder="Nombre o apellido del alumno" autocomplete="off" autocapitalize="words">
+</div>
+<div id="estado">Cargando…</div>
+<div id="res"></div>
+<div class="pie" id="pie"></div>
+</main>
+<script>
+(function () {
+  'use strict';
+  var MAX = 8, GUARDA = 'recogidas-clave';
+  var $ = function (id) { return document.getElementById(id); };
+  var entrada = $('entrada'), clave = $('clave'), buscador = $('buscador'), q = $('q'), estado = $('estado'), res = $('res'), pie = $('pie'), salir = $('salir');
+  var datos = null, indice = [], cifrado = null, t = null;
+
+  function di(txt, err) { estado.textContent = txt; estado.className = err ? 'err' : ''; }
+  function guardada() { try { return localStorage.getItem(GUARDA) || ''; } catch (e) { return ''; } }
+  function guarda(v) { try { v ? localStorage.setItem(GUARDA, v) : localStorage.removeItem(GUARDA); } catch (e) { /* sin almacenamiento: se pedirá cada vez */ } }
+  function bytes(b64) { var s = atob(b64), u = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; }
+  var ACENTOS = new RegExp('[' + String.fromCharCode(0x300) + '-' + String.fromCharCode(0x36f) + ']', 'g');
+  function norm(s) { return String(s || '').normalize('NFD').replace(ACENTOS, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+  function el(tag, cls, txt) { var e = document.createElement(tag); if (cls) e.className = cls; if (txt !== undefined) e.textContent = txt; return e; }
+
+  function descifra(c) {
+    return crypto.subtle.importKey('raw', new TextEncoder().encode(c.trim()), 'PBKDF2', false, ['deriveKey']).then(function (base) {
+      return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt: bytes(cifrado.salt), iterations: cifrado.it }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    }).then(function (key) {
+      return crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes(cifrado.iv) }, key, bytes(cifrado.ct));
+    }).then(function (buf) { return JSON.parse(new TextDecoder().decode(buf)); });
+  }
+
+  function abre(c, desdeGuardada) {
+    di('Comprobando clave…');
+    descifra(c).then(function (d) {
+      datos = d;
+      indice = d.alumnos.map(function (a) { return ' ' + norm(a[0]); });
+      guarda(c.trim());
+      entrada.hidden = true; buscador.hidden = false; salir.hidden = false; clave.value = '';
+      di('Escribe al menos 3 letras.');
+      pie.textContent = 'Datos del ERP a ' + d.actualizado + ' · ' + d.alumnos.length + ' alumnos activos';
+      q.focus();
+    }).catch(function () {
+      guarda('');
+      entrada.hidden = false; buscador.hidden = true;
+      di(desdeGuardada ? 'La clave ha cambiado. Pide la nueva a ICT.' : 'Clave incorrecta.', true);
+      clave.focus();
+    });
+  }
+
+  function persona(x, esAutorizado) {
+    var p = el('div', 'p'), i = el('div');
+    i.appendChild(el('b', '', x[0] || '(sin nombre)'));
+    if (esAutorizado) i.appendChild(el('div', 'dni', x[2] ? 'Documento acaba en ' + x[2].replace(/·/g, '') : 'Sin documento en el ERP'));
+    p.appendChild(i);
+    if (x[1]) { var a = el('a', '', x[1]); a.href = 'tel:' + String(x[1]).replace(/[^0-9+]/g, ''); p.appendChild(a); }
+    return p;
+  }
+
+  function busca() {
+    var tokens = norm(q.value).split(' ').filter(Boolean);
+    res.textContent = '';
+    if (tokens.join('').length < 3) { di('Escribe al menos 3 letras.'); return; }
+    var hallados = [];
+    indice.forEach(function (n, i) { if (tokens.every(function (tk) { return n.indexOf(' ' + tk) >= 0; })) hallados.push(datos.alumnos[i]); });
+    if (!hallados.length) { di('Ningún alumno activo coincide. Revisa cómo está escrito o prueba solo con el apellido.'); return; }
+    di(hallados.length > MAX ? 'Se muestran ' + MAX + ' de ' + hallados.length + '. Escribe algo más para afinar.' : hallados.length + (hallados.length === 1 ? ' alumno' : ' alumnos'));
+    hallados.slice(0, MAX).forEach(function (a) {
+      var f = datos.familias[a[3]] || { t: [], a: [] }, c = el('div', 'card');
+      c.appendChild(el('div', 'nino', a[0]));
+      c.appendChild(el('div', 'curso', a[1] + ' · ' + a[2]));
+      c.appendChild(el('h2', '', 'Padres / tutores'));
+      if (f.t.length) f.t.forEach(function (x) { c.appendChild(persona(x, false)); });
+      else c.appendChild(el('div', 'aviso', 'No constan aparte: mira la lista de autorizados o consulta en secretaría.'));
+      c.appendChild(el('h2', '', 'Autorizados a recoger (' + f.a.length + ')'));
+      if (f.a.length) f.a.forEach(function (x) { c.appendChild(persona(x, true)); });
+      else c.appendChild(el('div', 'aviso', 'Sin autorizados: solo pueden recogerlo los padres/tutores.'));
+      res.appendChild(c);
+    });
+  }
+
+  entrada.addEventListener('submit', function (e) { e.preventDefault(); if (clave.value.trim()) abre(clave.value, false); });
+  q.addEventListener('input', function () { clearTimeout(t); t = setTimeout(busca, 150); });
+  salir.addEventListener('click', function () { guarda(''); location.replace(location.pathname); });
+
+  if (!window.crypto || !crypto.subtle) { di('Este navegador no puede abrir los datos. Usa Chrome o Safari actualizados.', true); return; }
+  fetch('datos.json', { cache: 'no-store' }).then(function (r) { if (!r.ok) throw new Error(); return r.json(); }).then(function (c) {
+    cifrado = c;
+    // El enlace puede llevar la clave tras "#": no viaja al servidor y se borra de la barra al entrar.
+    var h = decodeURIComponent(location.hash.slice(1));
+    if (h) history.replaceState(null, '', location.pathname);
+    var c0 = h || guardada();
+    if (c0) abre(c0, !h); else { entrada.hidden = false; di('Introduce la clave que te ha dado ICT.'); clave.focus(); }
+  }).catch(function () { di('No se han podido cargar los datos. Comprueba la conexión y recarga.', true); });
+})();
+</script>
+</body>
+</html>

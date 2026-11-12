@@ -1,0 +1,41 @@
+name: Publicar recogidas
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Lunes a viernes, cada hora de 05:15 a 16:15 UTC (6:15–17:15 en invierno, 7:15–18:15 en verano)
+    - cron: '15 5-16 * * 1-5'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Leer el ERP y cifrar
+        run: node build.mjs dist
+        env:
+          BSCD_ERP_USER: ${{ secrets.BSCD_ERP_USER }}
+          BSCD_ERP_PASS: ${{ secrets.BSCD_ERP_PASS }}
+          RECOGIDAS_CLAVE: ${{ secrets.RECOGIDAS_CLAVE }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - id: pages
+        uses: actions/deploy-pages@v4
