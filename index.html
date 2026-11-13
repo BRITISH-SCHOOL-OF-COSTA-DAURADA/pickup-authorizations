@@ -33,6 +33,16 @@ h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)
 label{display:block;font-size:14px;color:var(--mut);margin:12px 2px 4px}
 .banner{background:var(--warnbg);color:var(--warn);border-radius:10px;padding:8px 10px;font-size:13px;margin-bottom:12px}
 .who{font-size:14px;color:var(--mut);margin:0 2px 10px}
+.quiet{color:var(--mut);font-size:15px;padding:6px 0}
+details{border-top:1px solid var(--line)}
+summary{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 0;font-weight:600;cursor:pointer;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";color:var(--mut);font-weight:400;font-size:20px;line-height:1;width:16px;text-align:center}
+details[open]>summary::after{content:"\2212"}
+summary .count{margin-left:auto;background:var(--warnbg);color:var(--warn);border-radius:999px;padding:1px 9px;font-size:13px}
+.n{background:var(--bg);border-radius:10px;padding:10px;margin:0 0 8px}
+.nmeta{font-size:13px;color:var(--mut)}
+.nmsg{margin:3px 0;overflow-wrap:anywhere}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -65,11 +75,15 @@ label{display:block;font-size:14px;color:var(--mut);margin:12px 2px 4px}
   // Nothing is stored beyond this browser tab, and the page only ever sends GET requests after sign-in.
   var ERP = 'https://api.app.bscd.eu/erp';
   var SESSION = 'pickup-session', MAX = 8;
+  // Today's notifications are asked again when the copy in memory is older than this.
+  var NOTICES_MAX_AGE = 2 * 60 * 1000, ZONE = 'Europe/Madrid';
+  // Order of the notification types on a card: Collection first, then Absent/Late, Bus, Meal time, Tutoring, Other.
+  var TYPE_ORDER = [2, 1, 9, 10, 3, 11], OPEN_TYPE = 2;
 
   var $ = function (id) { return document.getElementById(id); };
   var login = $('login'), user = $('user'), pass = $('pass'), go = $('go'), search = $('search'), who = $('who'), q = $('q'),
       status = $('status'), res = $('res'), foot = $('foot'), signout = $('signout');
-  var session = null, students = [], index = [], families = {}, timer = null, seq = 0;
+  var session = null, students = [], index = [], families = {}, notices = null, noticesAt = 0, timer = null, seq = 0;
 
   function say(txt, err) { status.textContent = txt; status.className = err ? 'err' : ''; }
   function el(tag, cls, txt) { var e = document.createElement(tag); if (cls) e.className = cls; if (txt !== undefined) e.textContent = txt; return e; }
@@ -145,7 +159,7 @@ label{display:block;font-size:14px;color:var(--mut);margin:12px 2px 4px}
 
   // ---- Screens
   function showLogin(msg, err) {
-    session = null; students = []; index = []; families = {}; store(null);
+    session = null; students = []; index = []; families = {}; notices = null; store(null);
     login.hidden = false; search.hidden = true; signout.hidden = true; res.textContent = ''; foot.textContent = ''; q.value = '';
     say(msg || 'Sign in with your school APP username and password.', err);
   }
@@ -156,13 +170,14 @@ label{display:block;font-size:14px;color:var(--mut);margin:12px 2px 4px}
     get('/alumnes').then(function (d) {
       // Keep only what the search needs; everything else in the ERP answer is dropped at once.
       students = (d.alumnes || []).filter(function (a) { return a.estat === 'actiu'; }).map(function (a) {
-        return { name: [txt(a.cognom1), txt(a.cognom2)].filter(Boolean).join(' ') + ', ' + txt(a.nom), year: txt(a.curs), cls: txt(a.classe), fam: Number(a.id_familia) };
+        return { id: Number(a.id), name: [txt(a.cognom1), txt(a.cognom2)].filter(Boolean).join(' ') + ', ' + txt(a.nom), year: txt(a.curs), cls: txt(a.classe), fam: Number(a.id_familia) };
       }).sort(function (x, y) { return x.name.localeCompare(y.name, 'es'); });
       index = students.map(function (s) { return ' ' + norm(s.name); });
       q.disabled = false; say('Type at least 3 letters.');
       foot.textContent = 'Live from the ERP · ' + students.length + ' active students';
       q.focus();
     }).catch(problem);
+    todaysNotices().catch(function () { /* shown on the cards */ });
   }
 
   function signIn(username, password) {
@@ -177,7 +192,7 @@ label{display:block;font-size:14px;color:var(--mut);margin:12px 2px 4px}
       if (!ok) { showLogin(x.http === 401 || x.http === 403 || x.http === 200 ? 'Wrong username or password.' : 'The APP is not responding (error ' + x.http + '). Try again in a minute.', true); pass.focus(); return; }
       var a = x.js.data.account || {};
       if (a.obligar_modificar_password) { showLogin('You must change your password in the APP before you can use this page.', true); return; }
-      session = { token: x.js.data.token, name: txt(a.name) || a.username || username, profile: txt(a.perfil), exp: expiry(x.js.data.token) };
+      session = { token: x.js.data.token, name: txt(a.name) || a.username || username, profile: txt(a.perfil), exp: expiry(x.js.data.token), year: (x.js.data.curs_escolar_actual || {}).id };
       store(session); showSearch();
     }).catch(function () { go.disabled = false; showLogin('Could not reach the APP. Check your connection and try again.', true); });
   }
@@ -195,6 +210,73 @@ label{display:block;font-size:14px;color:var(--mut);margin:12px 2px 4px}
       families[id].catch(function () { delete families[id]; });
     }
     return families[id];
+  }
+
+  // Today's notifications from families and staff, grouped by student. The ERP only offers the whole
+  // school year in one answer, so everything that is not for today is dropped at once.
+  function day(d) { return new Intl.DateTimeFormat('en-CA', { timeZone: ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d); }
+  function todaysNotices() {
+    if (!notices || Date.now() - noticesAt > NOTICES_MAX_AGE) {
+      var today = day(new Date());
+      var asked = notices = get('/notificacions/curs/' + session.year).then(function (d) {
+        var by = {};
+        ((d && d.notificacions) || []).forEach(function (n) {
+          var dates = n.puntual_dates || [], sent = new Date(n.created_at);
+          if (dates.length ? dates.indexOf(today) < 0 : day(sent) !== today) return;
+          var item = {
+            type: Number(n.id_notificacions_tipus), typeName: txt((n.notificacions_tipus || {}).en) || 'Other',
+            from: txt(n.origen), reason: n.motiu ? txt((n.motiu_txt || {}).en) : '', msg: txt(n.missatge),
+            sent: sent, sentToday: day(sent) === today, otherDays: dates.filter(function (x) { return x !== today; })
+          };
+          (n.ids_alumnes || []).forEach(function (id) { (by[id] = by[id] || []).push(item); });
+        });
+        return by;
+      });
+      noticesAt = Date.now();
+      asked.catch(function () { if (notices === asked) notices = null; });
+    }
+    return notices;
+  }
+  function when(n) {
+    var o = { timeZone: ZONE, hour: '2-digit', minute: '2-digit' };
+    if (!n.sentToday) { o.day = 'numeric'; o.month = 'short'; }
+    return isNaN(n.sent) ? '' : n.sent.toLocaleString('en-GB', o);
+  }
+  function shortDate(iso) { var d = new Date(iso + 'T12:00:00Z'); return isNaN(d) ? iso : d.toLocaleDateString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short' }); }
+  function notice(n) {
+    var b = el('div', 'n');
+    b.appendChild(el('div', 'nmeta', [when(n), n.from, n.reason].filter(Boolean).join(' · ')));
+    b.appendChild(el('div', 'nmsg', n.msg || '(no message)'));
+    if (n.otherDays.length) b.appendChild(el('div', 'nmeta', 'Also for ' + n.otherDays.map(shortDate).join(', ')));
+    return b;
+  }
+  // One fold per notification type. Collection opens by itself: it is where families name who collects today.
+  function fillNotices(box, list) {
+    box.textContent = '';
+    box.appendChild(el('h2', '', "Today's notifications (" + list.length + ')'));
+    if (!list.length) { box.appendChild(el('div', 'quiet', 'None for today.')); return; }
+    var groups = {}, types = [];
+    list.forEach(function (n) { if (!groups[n.type]) { groups[n.type] = []; types.push(n.type); } groups[n.type].push(n); });
+    var rank = function (t) { var i = TYPE_ORDER.indexOf(t); return i < 0 ? TYPE_ORDER.length : i; };
+    types.sort(function (a, b) { return rank(a) - rank(b) || a - b; }).forEach(function (t) {
+      var d = el('details'), s = el('summary');
+      s.appendChild(el('span', '', groups[t][0].typeName));
+      s.appendChild(el('span', 'count', String(groups[t].length)));
+      d.appendChild(s); d.open = t === OPEN_TYPE;
+      groups[t].forEach(function (n) { d.appendChild(notice(n)); });
+      box.appendChild(d);
+    });
+  }
+  function noticesFor(s) {
+    var box = el('div');
+    box.appendChild(el('h2', '', "Today's notifications"));
+    box.appendChild(el('div', 'quiet', 'Loading…'));
+    todaysNotices().then(function (by) { fillNotices(box, by[s.id] || []); }, function (why) {
+      if (why === 'session') { problem(why); return; }
+      box.lastChild.className = 'note';
+      box.lastChild.textContent = why === 'denied' ? "Your APP account is not allowed to see notifications. Ask ICT." : "Could not load today's notifications. Search again to retry.";
+    });
+    return box;
   }
 
   function person(x) {
@@ -215,6 +297,7 @@ label{display:block;font-size:14px;color:var(--mut);margin:12px 2px 4px}
     c.appendChild(el('h2', '', 'Authorised to collect (' + f.authorised.length + ')'));
     if (f.authorised.length) f.authorised.forEach(function (x) { c.appendChild(person(x)); });
     else c.appendChild(el('div', 'note', 'Nobody else is authorised: only the parents / guardians may collect this child.'));
+    c.appendChild(noticesFor(s));
     return c;
   }
   function find() {
@@ -240,7 +323,7 @@ label{display:block;font-size:14px;color:var(--mut);margin:12px 2px 4px}
   if (/\/dev\//.test(location.pathname)) $('devbanner').hidden = false;
   if (!window.crypto || !crypto.subtle) { say('This browser cannot sign in. Use an up-to-date Chrome or Safari.', true); return; }
   session = stored();
-  if (session && session.exp > Date.now()) showSearch(); else showLogin();
+  if (session && session.exp > Date.now() && session.year) showSearch(); else showLogin();
 })();
 </script>
 </body>
