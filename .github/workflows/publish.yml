@@ -27,7 +27,7 @@ jobs:
       - name: Assemble the site
         run: |
           mkdir -p dist
-          cp index.html dist/index.html
+          cp index.html manual.html dist/
           printf 'User-agent: *\nDisallow: /\n' > dist/robots.txt
           touch dist/.nojekyll
       # Preview of the dev branch at /dev/. Run this workflow manually after pushing to dev.
@@ -35,6 +35,7 @@ jobs:
         run: |
           if git fetch --depth=1 origin dev 2>/dev/null; then
             mkdir -p dist/dev && git show FETCH_HEAD:index.html > dist/dev/index.html
+            git show FETCH_HEAD:manual.html > dist/dev/manual.html 2>/dev/null || rm -f dist/dev/manual.html
           fi
       - uses: actions/upload-pages-artifact@v3
         with:
